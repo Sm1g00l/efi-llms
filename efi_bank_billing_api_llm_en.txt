@@ -567,6 +567,235 @@ Content-Type: application/json
 
 ---
 
+## Flowcharts (Visual Reference)
+
+> **Source**: https://dev.efipay.com.br/docs/api-cobrancas/fluxogramas
+> 
+> This page contains flowcharts that exemplify the flow of requests needed for the most common actions in the EFI Billing API.
+
+### Flowchart 1: Generate Charges (Bank Slip and Credit Card)
+
+**Request Flow**:
+```
+START
+  ↓
+[Authenticate via API Cobrancas]
+  ↓
+POST /v1/authorize (✅ Authorized)
+  ↓
+[Create charge]
+  ↓
+[Create charge with bank slip or card?]
+  ├── One-Step: POST /v1/charge/one-step (bank slip/card)
+  │      ↓
+  │   [Return charge_id + payment info]
+  │
+  └── Two-Steps:
+      ├── POST /v1/charge
+      │    ↓
+      │ [Create transaction]
+      │    ↓
+      │ POST /v1/charge/:id/billet OR /v1/charge/:id/card
+      │    ↓
+      └── [Associate payment method (bank slip or card)]
+             ↓
+          [Return charge_id + payment details]
+             ↓
+END
+```
+
+**Key Points**:
+- **One-Step**: Creates charge with payment method in single request
+- **Two-Steps**: More control, create transaction first, then associate payment method
+- After creation, monitor webhooks for status changes
+
+---
+
+### Flowchart 2: Installment Plans (Carnês)
+
+**Request Flow**:
+```
+START
+  ↓
+[Authenticate via API Cobrancas]
+  ↓
+POST /v1/authorize
+  ↓
+[Create carnê]
+  ↓
+POST /v1/carnet
+  ↓
+[Create parcel]
+  ↓
+POST /v1/carnet/:id/parcel
+  ↓
+END
+```
+
+**Key Points**:
+- Carnê = installment plan with multiple bank slips
+- Each parcel is a separate charge
+- Monitor each parcel independently via webhooks
+
+---
+
+### Flowchart 3: Subscriptions (Assinaturas)
+
+**Request Flow**:
+```
+START
+  ↓
+[Authenticate via API Cobrancas]
+  ↓
+POST /v1/plan (✅ Authorized)
+  ↓
+[Create plan]
+  ↓
+POST /v1/plan/:id/subscription
+  ↓
+[Create subscription]
+  ↓
+[Create what type of subscription?]
+  ├── Boleto+Carnê: POST /v1/plan/:id/subscription/one-step (billet-carnet)
+  │
+  ├── Criar assinatura via: POST /v1/subscription
+  │      ↓
+  │   [Create transaction]
+  │      ↓
+  │   POST /v1/charge/:id/billet OR /v1/charge/:id/card
+  │
+  └── Link of payment: POST /v1/plan/:id/subscription/one-step/link
+         ↓
+      [Create subscription with payment link]
+         ↓
+      POST /v1/charge/:id/link
+         ↓
+      [Associate charge to payment link]
+         ↓
+      POST /v1/charge/:id/link
+         ↓
+END
+```
+
+**Key Points**:
+- Plans define recurring rules (amount, frequency)
+- Subscriptions are instances of a plan
+- Multiple payment methods: billet, card, payment link
+- Recurring charges happen automatically
+
+---
+
+### Flowchart 4: Payment Link
+
+**Request Flow**:
+```
+START
+  ↓
+[Authenticate via API Cobrancas]
+  ↓
+POST /v1/authorize (✅ Authorized)
+  ↓
+[Create charge]
+  ↓
+[Create link in one or two steps?]
+  ├── One-Step: POST /v1/charge/one-step/link
+  │      ↓
+  │   [Return charge_id + payment_url]
+  │      ↓
+  │   END
+  │
+  └── Two-Steps:
+         ↓
+      [Create transaction]
+         ↓
+      POST /v1/charge
+         ↓
+      [Associate charge to payment link]
+         ↓
+      POST /v1/charge/:id/link
+         ↓
+      [Return payment_url]
+         ↓
+      END
+```
+
+**Key Points**:
+- **One-Step**: Fastest way (single POST returns `payment_url`)
+- **Two-Steps**: More control, can configure link after charge creation
+- Customer accesses link to choose payment method (PIX, card, billet)
+- Monitor status via webhooks
+
+---
+
+### Flowchart 5: Notification Flow (Webhooks)
+
+**Request Flow**:
+```
+START (Customer pays via URL)
+  ↓
+[Transaction status changes]
+  ↓
+╔══════════════════╗
+║  EFI API System  ║
+╚═══════╦══════════╝
+        ↓
+   [Receive status change]
+        ↓
+   ┌────────────┐
+   │ Send POST  │ ──NO──► [Retry after delay]
+   │ to your    │            ↓
+   │ webhook    │         [Delay table]
+   │ URL        │            ↓
+   └─────┬──────┘         [Retry up to]
+         │                [10 attempts]
+         │                   ↓
+        YES                [Return to]
+         ↓                 [Send POST]
+   [Return HTTP 200]
+         │
+         ↓
+   [Extract token from POST body]
+         ↓
+   [Execute POST to GET /v1/notification/:token]
+         ↓
+   [Receive complete event data]
+   (charge_id, status.current, status.previous, value)
+         ↓
+   ┌────────────────┐   ┌──────────────────┐   ┌─────────────────────┐
+   │ Display info to│   │ Store event in   │   │ Send notification to│
+   │ administrator  │   │ internal db      │   │ customer via email  │
+   └────────────────┘   └──────────────────┘   └─────────────────────┘
+         │                      │                         │
+         └──────────────────────┴─────────────────────────┘
+                                ↓
+                               END
+```
+
+**Key Points**:
+- **Step 1**: EFI sends POST to your `notification_url` with a token
+- **Step 2**: You must respond with HTTP 200 immediately
+- **Step 3**: Extract token and query `GET /v1/notification/:token` for details
+- **Retry Logic**: If you don't respond 200, EFI retries up to 10 times with increasing delays
+- **Event Data**: Includes `charge_id`, `status.current`, `status.previous`, `value` (when paid)
+- **Multiple Events**: The response array contains ALL events in chronological order
+- **Process**: Display to admin, store in database, notify customer
+
+**Webhook Retry Schedule**:
+| Attempt | Delay (minutes) |
+|---------|-----------------|
+| 1       | 5               |
+| 2       | 10              |
+| 3       | 20              |
+| 4       | 40              |
+| 5       | 80              |
+| 6       | 160             |
+| 7       | 320             |
+| 8       | 640             |
+| 9       | 1,280           |
+| 10      | 52,560 (~36.5 days) |
+
+---
+
 ## Transaction Status
 
 ### Status Flow - Transactions
