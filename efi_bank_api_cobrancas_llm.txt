@@ -1,0 +1,1064 @@
+# EFI Bank - Billing API (API Cobranças) - LLM Documentation
+
+> **Purpose**: Structured documentation of EFI Bank's Billing API (formerly Gerencianet) for future implementation. This documentation focuses especially on **Payment Links** and notification systems.
+> 
+> **Collection Date**: January 17, 2026
+> 
+> **Source**: https://dev.efipay.com.br/docs/api-cobrancas/
+
+---
+
+## 📋 Table of Contents
+
+1. [Overview](#overview)
+2. [Credentials and Authentication](#credentials-and-authentication)
+3. [Payment Link - Endpoints](#payment-link---endpoints)
+4. [Transaction Status](#transaction-status)
+5. [Notification System (Webhooks)](#notification-system-webhooks)
+6. [Integration Examples](#integration-examples)
+7. [Best Practices](#best-practices)
+
+---
+
+## Overview
+
+The **EFI Billing API** offers advanced resources to issue different types of charges:
+- Bank slip (boleto)
+- Credit card
+- Installment plan (carnê)
+- **Payment links** (focus of this documentation)
+- Subscriptions (recurring charges)
+- Marketplace (payment splitting)
+- **PIX** (integrated in links)
+
+### Payment Link Features
+
+The **Payment Link** resource allows:
+- Generate a link to Efí's hosted payment page
+- Choose allowed payment methods (bank slip, card, PIX)
+- No need to implement your own checkout
+- Provides security to the payer with Efí's domain
+
+### Advantages over Transparent Checkout
+
+- **Simplicity**: No need to develop your own interface
+- **Security**: Trusted Efí interface
+- **Flexibility**: Choose payment methods
+- **Maintenance**: Updates managed by Efí
+
+---
+
+## Credentials and Authentication
+
+### Obtaining Credentials
+
+To integrate with the API, you need an **EFI Digital Account** and create an application.
+
+**Process**:
+1. Access your Efí account
+2. Click on "API" in the side menu
+3. Click on "Create application"
+4. Enable the "Billing API"
+5. Choose the scope (Production/Sandbox)
+
+### Key Pairs
+
+Each application has **2 key pairs**:
+- `Client_Id` and `Client_Secret` for **Production**
+- `Client_Id` and `Client_Secret` for **Sandbox (Homologation)**
+
+### Base URLs (Routes)
+
+| Environment | Base URL |
+|-------------|----------|
+| **Production** | `https://cobrancas.api.efipay.com.br` |
+| **Sandbox** | `https://cobrancas-h.api.efipay.com.br` |
+
+### OAuth2 Authentication
+
+The API uses the **OAuth2** protocol with **HTTP Basic Auth** authentication.
+
+**Authorization Endpoint**:
+```
+POST /v1/authorize
+```
+
+**Example Request (PHP)**:
+```php
+$config = [
+    "client_id" => "YOUR-CLIENT-ID",
+    "client_secret" => "YOUR-CLIENT-SECRET"
+];
+
+$autorizacao = base64_encode($config["client_id"] . ":" . $config["client_secret"]);
+
+$curl = curl_init();
+curl_setopt_array($curl, array(
+    CURLOPT_URL => 'https://cobrancas-h.api.efipay.com.br/v1/authorize',
+    CURLOPT_RETURNTRANSFER => true,
+    CURLOPT_CUSTOMREQUEST => 'POST',
+    CURLOPT_POSTFIELDS => '{"grant_type": "client_credentials"}',
+    CURLOPT_HTTPHEADER => array(
+        "Authorization: Basic $autorizacao",
+        "Content-Type: application/json"
+    ),
+));
+
+$response = curl_exec($curl);
+curl_close($curl);
+```
+
+**Example Response**:
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expires_in": 600,
+  "expire_at": "1690986856033",
+  "token_type": "Bearer"
+}
+```
+
+### Token Attributes
+
+| Attribute | Description | Type |
+|-----------|-------------|------|
+| `access_token` | Authorization token to use in requests | string |
+| `refresh_token` | Token to renew an expired access_token | string |
+| `expires_in` | Expiration time in seconds (default: 600) | integer |
+| `expire_at` | ISO 8601 timestamp of expiration | string |
+| `token_type` | Authorization type (always "Bearer") | string |
+
+### Security
+
+⚠️ **IMPORTANT**: 
+- Implement two-factor authentication
+- Store credentials securely (environment variables)
+- Don't expose Client_Secret in frontend
+- Use HTTPS in all communications
+
+---
+
+## Link de Pagamento - Endpoints
+
+### Abordagens: One Step vs Two Steps
+
+A API oferece duas abordagens para criar links de pagamento:
+
+#### **One Step** (Recomendado para simplicidade)
+- Cria transação e link em uma única requisição
+- Retorna diretamente o `payment_url`
+- Status inicial: `link`
+
+#### **Two Steps** (Mais controle)
+1. Criar a transação (`POST /v1/charge`) → recebe `charge_id`, status: `new`
+2. Associar ao link (`POST /v1/charge/:id/link`) → recebe `payment_url`, status: `link`
+
+---
+
+### 1. Criar Link de Pagamento (One Step)
+
+**Endpoint**:
+```
+POST /v1/charge/one-step/link
+```
+
+**Descrição**: Cria transação e link de pagamento em uma única requisição.
+
+**Headers**:
+```
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Body (estrutura mínima)**:
+```json
+{
+  "items": [
+    {
+      "name": "Produto ou Serviço",
+      "value": 10000,
+      "amount": 1
+    }
+  ],
+  "settings": {
+    "payment_method": "all",
+    "expire_at": "2026-12-31"
+  },
+  "metadata": {
+    "notification_url": "https://seusite.com.br/webhook",
+    "custom_id": "pedido_12345"
+  }
+}
+```
+
+**Campos Importantes**:
+
+| Campo | Tipo | Descrição | Obrigatório |
+|-------|------|-----------|-------------|
+| `items` | array | Itens da cobrança | ✅ Sim |
+| `items[].name` | string | Nome do produto/serviço | ✅ Sim |
+| `items[].value` | integer | Valor em centavos (ex: 10000 = R$ 100,00) | ✅ Sim |
+| `items[].amount` | integer | Quantidade | ✅ Sim |
+| `settings.payment_method` | string | Formas permitidas: "all", "banking_billet", "credit_card", "pix" | ✅ Sim |
+| `settings.expire_at` | string | Data de expiração do link (YYYY-MM-DD) | ❌ Não |
+| `metadata.notification_url` | string | URL para receber webhooks | ❌ Não |
+| `metadata.custom_id` | string | Identificador customizado | ❌ Não |
+
+**Response (200 OK)**:
+```json
+{
+  "code": 200,
+  "data": {
+    "charge_id": 12345678,
+    "total": 10000,
+    "status": "link",
+    "payment_url": "https://pagamento.efipay.com.br/v1/8a7sd89a7sd8",
+    "created_at": "2026-01-17 10:30:00"
+  }
+}
+```
+
+---
+
+### 2. Criar Transação (Two Steps - Passo 1)
+
+**Endpoint**:
+```
+POST /v1/charge
+```
+
+**Descrição**: Cria uma transação sem associar a forma de pagamento.
+
+**Body**:
+```json
+{
+  "items": [
+    {
+      "name": "Consulta Médica",
+      "value": 25000,
+      "amount": 1
+    }
+  ],
+  "metadata": {
+    "notification_url": "https://budmed.com.br/webhook/efi",
+    "custom_id": "appointment_789"
+  }
+}
+```
+
+**Response**:
+```json
+{
+  "code": 200,
+  "data": {
+    "charge_id": 87654321,
+    "total": 25000,
+    "status": "new",
+    "created_at": "2026-01-17 10:35:00"
+  }
+}
+```
+
+---
+
+### 3. Associar ao Link (Two Steps - Passo 2)
+
+**Endpoint**:
+```
+POST /v1/charge/:id/link
+```
+
+**Descrição**: Associa uma transação existente a um link de pagamento.
+
+**URL Params**:
+- `:id` → `charge_id` retornado no Passo 1
+
+**Body**:
+```json
+{
+  "payment_method": "all",
+  "expire_at": "2026-12-31",
+  "message": "Pagamento da consulta médica"
+}
+```
+
+**Campos Adicionais**:
+
+| Campo | Tipo | Descrição |
+|-------|------|-----------|
+| `billet_discount` | integer | Desconto para boleto (centavos) |
+| `card_discount` | integer | Desconto para cartão (centavos) |
+| `message` | string | Mensagem ao pagador (até 80 caracteres) |
+| `request_delivery_address` | boolean | Solicitar endereço de entrega |
+
+**Response**:
+```json
+{
+  "code": 200,
+  "data": {
+    "charge_id": 87654321,
+    "payment_url": "https://pagamento.efipay.com.br/v1/xyz123abc",
+    "expire_at": "2026-12-31"
+  }
+}
+```
+
+---
+
+### 4. Consultar Link de Pagamento
+
+**Endpoint**:
+```
+GET /v1/charge/:id
+```
+
+**Descrição**: Retorna informações detalhadas de uma transação/link.
+
+**Response**:
+```json
+{
+  "code": 200,
+  "data": {
+    "charge_id": 87654321,
+    "total": 25000,
+    "status": "link",
+    "payment_url": "https://pagamento.efipay.com.br/v1/xyz123abc",
+    "items": [...],
+    "payment": null,
+    "history": [...]
+  }
+}
+```
+
+---
+
+### 5. Atualizar Metadata (notification_url / custom_id)
+
+**Endpoint**:
+```
+PUT /v1/charge/:id/metadata
+```
+
+**Descrição**: Atualiza URL de notificação ou custom_id de transação existente.
+
+**Casos de Uso**:
+- Alteração de IP do servidor
+- Instalação de SSL (http → https)
+- Atualização de webhook em lote
+- Adicionar custom_id esquecido
+
+**Body**:
+```json
+{
+  "notification_url": "https://novo-servidor.com.br/webhook",
+  "custom_id": "novo_id_interno"
+}
+```
+
+**Limite**: 7.500 requisições a cada 24 horas neste endpoint.
+
+---
+
+### 6. Atualizar Parâmetros do Link
+
+**Endpoint**:
+```
+PUT /v1/charge/:id/link
+```
+
+**Descrição**: Altera configurações do link **antes** da confirmação do pagamento.
+
+**Parâmetros Atualizáveis**:
+- Formas de pagamento permitidas
+- Descontos de boleto/cartão
+- Descontos condicionais
+- Mensagem ao cliente
+- Data de vencimento
+- Solicitação de endereço de entrega
+
+**Body (exemplo)**:
+```json
+{
+  "billet_discount": 500,
+  "card_discount": 300,
+  "message": "Pague com desconto até 31/12/2026",
+  "expire_at": "2026-12-31"
+}
+```
+
+---
+
+### 7. Cancelar Link de Pagamento
+
+**Endpoint**:
+```
+PUT /v1/charge/:id/cancel
+```
+
+**Descrição**: Cancela uma transação/link de pagamento.
+
+**Observação Importante**: 
+- Se o cliente imprimiu o boleto **antes** do cancelamento, ele pode pagar normalmente
+- Neste caso, o status muda de `canceled` → `paid` após confirmação
+
+---
+
+### 8. Adicionar ao Histórico
+
+**Endpoint**:
+```
+POST /v1/charge/:id/history
+```
+
+**Descrição**: Adiciona mensagem customizada ao histórico da transação.
+
+**Body**:
+```json
+{
+  "description": "Cliente solicitou mudança de endereço"
+}
+```
+
+**Limites**:
+- Mínimo: 1 caractere
+- Máximo: 255 caracteres
+
+---
+
+### 9. Reenviar Link por Email
+
+**Endpoint**:
+```
+POST /v1/charge/:id/link/resend
+```
+
+**Descrição**: Reenvia o link de pagamento para um email.
+
+**Body**:
+```json
+{
+  "email": "cliente@email.com.br"
+}
+```
+
+**Requisitos**:
+- Transação deve ter `status = "link"`
+- Email deve ser válido
+
+---
+
+## Status das Transações
+
+### Fluxo de Status - Transações
+
+```
+┌─────────┐
+│   new   │  Cobrança criada, aguardando pagamento
+└────┬────┘
+     │
+     ├──► link        Link de pagamento gerado
+     │
+     └──► waiting     Forma de pagamento selecionada
+          │
+          ├──► identified   Pagamento identificado (antes do crédito)
+          │
+          ├──► approved     Pagamento aprovado (cartão)
+          │
+          └──► paid         ✅ Pagamento confirmado
+               │
+               ├──► refunded      Devolvido
+               ├──► contested     Contestado
+               ├──► canceled      Cancelado
+               └──► settled       Confirmado manualmente
+```
+
+### Tabela Completa de Status
+
+| Status | Descrição | Status Final? |
+|--------|-----------|---------------|
+| `new` | Cobrança gerada, aguardando forma de pagamento | ❌ |
+| `link` | Link de pagamento ativo | ❌ |
+| `waiting` | Forma de pagamento selecionada, aguardando confirmação | ❌ |
+| `identified` | Pagamento identificado, antes do crédito | ❌ |
+| `approved` | Pagamento aprovado pela operadora (cartão) | ❌ |
+| `paid` | **Pagamento confirmado** | ✅ |
+| `unpaid` | Não foi possível confirmar o pagamento | ✅ |
+| `refunded` | Pagamento devolvido | ✅ |
+| `contested` | Pagamento em contestação | ✅ |
+| `canceled` | Cobrança cancelada | ✅ |
+| `settled` | Confirmado manualmente | ✅ |
+| `expired` | Link/cobrança expirado | ✅ |
+
+### Status de Links de Pagamento
+
+| Status | Quando Ocorre |
+|--------|---------------|
+| `new` | Link criado, nenhuma ação do pagador |
+| `link` | Link ativo, aguardando pagamento |
+| `expired` | Link atingiu data de `expire_at` |
+
+### Status Finais ("Resolvidos")
+
+Uma cobrança é considerada **resolvida** quando atinge um dos status finais:
+- ✅ `paid` (sucesso)
+- ✅ `contested`
+- ✅ `refunded`
+- ✅ `settled`
+- ✅ `canceled`
+
+---
+
+## Sistema de Notificações (Webhooks)
+
+### Como Funciona
+
+A Efí envia **notificações automáticas** via HTTP POST sempre que o status de uma transação muda.
+
+**Processo em 2 Etapas**:
+1. **Efí → Sua URL**: POST com `notification` token
+2. **Você → Efí**: GET `/v1/notification/:token` para obter detalhes
+
+### Configurar URL de Notificação
+
+**Durante criação da transação**:
+```json
+{
+  "items": [...],
+  "metadata": {
+    "notification_url": "https://seusite.com.br/webhook/efi"
+  }
+}
+```
+
+**Atualizar posteriormente**:
+```
+PUT /v1/charge/:id/metadata
+```
+
+### Receber Notificação (Webhook)
+
+**Request da Efí para sua URL**:
+```
+POST https://seusite.com.br/webhook/efi
+Content-Type: application/x-www-form-urlencoded
+
+notification=09027955-5e06-4ff0-a9c7-46b47b8f1b27
+```
+
+**Seu endpoint deve**:
+1. Responder com status HTTP `200 OK`
+2. Extrair o token: `$_POST['notification']`
+3. Consultar detalhes: `GET /v1/notification/:token`
+
+### Consultar Detalhes da Notificação
+
+**Endpoint**:
+```
+GET /v1/notification/:token
+```
+
+**Exemplo (PHP)**:
+```php
+$token = $_POST["notification"];
+
+$params = ['token' => $token];
+$api = new Efí($options);
+$chargeNotification = $api->getNotification($params, []);
+
+// Pegar último status
+$i = count($chargeNotification["data"]);
+$ultimoStatus = $chargeNotification["data"][$i-1];
+
+$charge_id = $ultimoStatus["identifiers"]["charge_id"];
+$statusAtual = $ultimoStatus["status"]["current"];
+```
+
+**Response (exemplo)**:
+```json
+{
+  "code": 200,
+  "data": [
+    {
+      "id": 1,
+      "created_at": "2022-02-20 09:12:23",
+      "type": "charge",
+      "custom_id": null,
+      "identifiers": {
+        "charge_id": 24342333
+      },
+      "status": {
+        "current": "new",
+        "previous": null
+      }
+    },
+    {
+      "id": 2,
+      "created_at": "2022-02-20 09:12:23",
+      "type": "charge",
+      "identifiers": {
+        "charge_id": 24342333
+      },
+      "status": {
+        "current": "waiting",
+        "previous": "new"
+      }
+    },
+    {
+      "id": 3,
+      "created_at": "2022-04-03 07:33:30",
+      "type": "charge",
+      "identifiers": {
+        "charge_id": 24342333
+      },
+      "received_by_bank_at": "2022-04-02",
+      "status": {
+        "current": "paid",
+        "previous": "unpaid"
+      },
+      "value": 6990
+    }
+  ]
+}
+```
+
+### Estrutura da Resposta de Notificação
+
+| Campo | Descrição |
+|-------|-----------|
+| `id` | Ordem sequencial de eventos (1, 2, 3...) |
+| `created_at` | Data/hora da alteração |
+| `type` | Tipo da cobrança ("charge", "subscription", "carnet") |
+| `custom_id` | Seu identificador customizado |
+| `identifiers.charge_id` | ID único da transação |
+| `status.current` | Status atual |
+| `status.previous` | Status anterior |
+| `value` | Valor confirmado (aparece quando `paid`) |
+| `received_by_bank_at` | Data de recebimento (quando `paid`) |
+
+### Ordem das Notificações
+
+⚠️ **IMPORTANTE**: As notificações seguem a ordem cronológica dos eventos.
+
+**Exemplo - Parcelamento (Carnê)**:
+- Parcela 1 paga → notificação com `id: 1`
+- Parcela 2 paga → notificação com `id: 2`
+- Parcela 3 paga → notificação com `id: 3`
+
+Para sincronizar: percorra o array e processe eventos não sincronizados (não assuma que o último é sempre o novo).
+
+### Tentativas de Reenvio
+
+Se sua URL **não responder com HTTP 200**, a Efí tenta reenviar:
+
+| Tentativa | Tempo (minutos) |
+|-----------|-----------------|
+| 1 | 5 |
+| 2 | 10 |
+| 3 | 20 |
+| 4 | 40 |
+| 5 | 80 |
+| 6 | 160 |
+| 7 | 320 |
+| 8 | 640 |
+| 9 | 1.280 |
+| 10 | 52.560 (≈36 dias) |
+
+**Total**: Até **3 dias de tentativas** desde o primeiro envio.
+
+### Histórico de Notificações
+
+Você pode visualizar:
+- **Histórico de Notificações**: POSTs enviados pela Efí
+- **Histórico de Requisições**: GETs feitos pelo seu sistema
+
+Acesse na interface Efí: `API > Transações > [Transação] > Notificações`
+
+### Códigos de Status HTTP
+
+| Código | Significado |
+|--------|-------------|
+| `200` | ✅ Sucesso |
+| `301` | ⚠️ Redirecionamento permanente |
+| `302` | ⚠️ Redirecionamento temporário |
+| `404` | ❌ URL não encontrada |
+| `429` | ⚠️ Too many requests |
+| `500` | ❌ Erro interno do servidor (seu) |
+
+### Endereços IP da Efí
+
+Para configurar firewall/whitelist, libere os IPs da Efí:
+👉 https://sejaefi.com.br/central-de-ajuda/api/quais-enderecos-de-ip-gerencianet-utiliza
+
+### Ferramenta de Teste: WebhookInbox
+
+Para testar webhooks localmente sem servidor público:
+- Acesse: http://webhookinbox.com/
+- Clique em "Create An Inbox"
+- Use a URL gerada em `notification_url`
+- Visualize POSTs enviados pela Efí
+
+---
+
+## Exemplos de Integração
+
+### Caso de Uso: Sistema de Agendamento Médico (BudMed)
+
+**Cenário**: Paciente agenda consulta e precisa pagar via link.
+
+#### Passo 1: Criar Link de Pagamento
+
+```php
+// Após paciente agendar consulta
+$appointment = Appointment::find($appointmentId);
+
+$items = [
+    [
+        'name' => 'Consulta - Dr. ' . $appointment->doctor->name,
+        'value' => 25000, // R$ 250,00
+        'amount' => 1
+    ]
+];
+
+$metadata = [
+    'notification_url' => 'https://budmed.com.br/webhook/efi',
+    'custom_id' => 'appointment_' . $appointment->id
+];
+
+$body = [
+    'items' => $items,
+    'metadata' => $metadata,
+    'settings' => [
+        'payment_method' => 'all', // boleto, cartão, pix
+        'expire_at' => now()->addDays(3)->format('Y-m-d'),
+        'message' => 'Pagamento da consulta médica'
+    ]
+];
+
+// Enviar para Efí
+$response = $efiApi->createOneStepLink($body);
+
+// Salvar na base de dados
+$appointment->update([
+    'charge_id' => $response['data']['charge_id'],
+    'payment_url' => $response['data']['payment_url'],
+    'payment_status' => 'pending'
+]);
+
+// Enviar link para paciente (email/SMS)
+$this->sendPaymentLink($appointment->patient, $response['data']['payment_url']);
+```
+
+#### Passo 2: Receber Webhook
+
+```php
+// routes/web.php
+Route::post('/webhook/efi', [EfiWebhookController::class, 'handle']);
+
+// EfiWebhookController.php
+public function handle(Request $request)
+{
+    $token = $request->input('notification');
+    
+    // Consultar detalhes na Efí
+    $params = ['token' => $token];
+    $details = $this->efiApi->getNotification($params);
+    
+    // Pegar último status
+    $lastEvent = end($details['data']);
+    $chargeId = $lastEvent['identifiers']['charge_id'];
+    $status = $lastEvent['status']['current'];
+    
+    // Buscar consulta pelo charge_id
+    $appointment = Appointment::where('charge_id', $chargeId)->first();
+    
+    if (!$appointment) {
+        Log::error('Appointment not found for charge_id: ' . $chargeId);
+        return response()->json(['status' => 'error'], 404);
+    }
+    
+    // Atualizar status conforme webhook
+    switch ($status) {
+        case 'paid':
+            $appointment->update(['payment_status' => 'paid']);
+            event(new AppointmentPaid($appointment));
+            break;
+            
+        case 'waiting':
+            $appointment->update(['payment_status' => 'processing']);
+            break;
+            
+        case 'canceled':
+            $appointment->update(['payment_status' => 'canceled']);
+            event(new AppointmentCanceled($appointment));
+            break;
+            
+        case 'refunded':
+            $appointment->update(['payment_status' => 'refunded']);
+            break;
+    }
+    
+    // SEMPRE retornar 200 OK
+    return response()->json(['status' => 'success'], 200);
+}
+```
+
+#### Passo 3: Lógica de Negócio
+
+```php
+// AppointmentPaid Event Listener
+class SendAppointmentConfirmation
+{
+    public function handle(AppointmentPaid $event)
+    {
+        $appointment = $event->appointment;
+        
+        // 1. Enviar confirmação por email
+        Mail::to($appointment->patient->email)
+            ->send(new AppointmentConfirmedMail($appointment));
+        
+        // 2. Notificar médico
+        $appointment->doctor->notify(
+            new NewAppointmentNotification($appointment)
+        );
+        
+        // 3. Gerar link do Google Meet (se configurado)
+        if ($appointment->is_online) {
+            $meetLink = $this->googleMeetService->createMeeting($appointment);
+            $appointment->update(['meet_link' => $meetLink]);
+        }
+    }
+}
+```
+
+---
+
+### Caso de Uso: Produtos de Prescrição
+
+**Cenário**: Paciente precisa comprar produtos recomendados pelo médico.
+
+```php
+// Criar link para compra de produtos
+$prescription = Prescription::find($prescriptionId);
+$items = [];
+
+foreach ($prescription->products as $product) {
+    $items[] = [
+        'name' => $product->name,
+        'value' => $product->pivot->recommended_quantity * $product->price,
+        'amount' => $product->pivot->recommended_quantity
+    ];
+}
+
+$body = [
+    'items' => $items,
+    'metadata' => [
+        'notification_url' => 'https://budmed.com.br/webhook/efi',
+        'custom_id' => 'prescription_' . $prescription->id
+    ],
+    'settings' => [
+        'payment_method' => 'all',
+        'request_delivery_address' => true, // Solicitar endereço de entrega
+        'message' => 'Produtos da sua prescrição médica'
+    ]
+];
+
+$response = $efiApi->createOneStepLink($body);
+
+Order::create([
+    'prescription_id' => $prescription->id,
+    'charge_id' => $response['data']['charge_id'],
+    'payment_url' => $response['data']['payment_url'],
+    'total_price' => $response['data']['total'],
+    'status' => 'pending'
+]);
+```
+
+---
+
+## Boas Práticas
+
+### ✅ Segurança
+
+1. **Proteja suas credenciais**:
+   - Use variáveis de ambiente (`.env`)
+   - NUNCA commite `Client_Secret` no git
+   - Implemente autenticação 2FA
+
+2. **Valide Webhooks**:
+   - Sempre consulte `GET /v1/notification/:token`
+   - Não confie apenas no POST recebido
+   - Implemente logging de todas as notificações
+
+3. **HTTPS Obrigatório**:
+   - Use SSL em produção
+   - Mantenha certificados atualizados
+   - Configure redirects corretamente (301/302)
+
+### ✅ Tratamento de Erros
+
+1. **Sempre retorne HTTP 200** no webhook (mesmo com erro interno)
+2. Implemente retry logic para chamadas à API Efí
+3. Use try-catch em todas as interações com API
+4. Mantenha logs detalhados de erros
+
+### ✅ Performance
+
+1. **Webhook deve ser rápido**:
+   - Receba POST → valide → responda 200 OK
+   - Processe lógica de negócio em background (jobs/queues)
+
+2. **Cache de tokens**:
+   - Tokens duram 600 segundos (10 min)
+   - Reutilize tokens válidos
+   - Implemente refresh automático
+
+3. **Rate Limiting**:
+   - Endpoint `/charge/:id/metadata`: max 7.500 req/24h
+   - Implemente controle de requisições
+
+### ✅ Monitoramento
+
+1. **Verifique Status da Fila**:
+   - Acesse: https://sejaefi.com.br/confirmacoes
+   - Monitore atrasos em callbacks
+
+2. **Histórico de Notificações**:
+   - Interface Efí mostra POSTs enviados
+   - Verifique falhas (404, 500, etc.)
+
+3. **Testes com Postman**:
+   - Collection oficial: https://documenter.getpostman.com/view/13574984/Uz5ArJQc
+   - Configure environments (Produção/Homologação)
+
+### ✅ Desenvolvimento
+
+1. **Use ambiente de Homologação** para testes
+2. **WebhookInbox** para testar callbacks localmente
+3. Implemente **feature flags** para ativar/desativar integrações
+4. Mantenha **documentação interna** atualizada
+
+### ✅ Gestão de Transações
+
+1. **Sempre use `custom_id`**:
+   - Facilita rastreamento
+   - Evita duplicações
+   - Permite reconciliação
+
+2. **Monitore status finais**:
+   - `paid` → processar pedido
+   - `canceled` → notificar usuário
+   - `refunded` → reverter operações
+
+3. **Histórico de transações**:
+   - Use `POST /v1/charge/:id/history` para anotações
+   - Registre mudanças importantes
+   - Facilita suporte ao cliente
+
+---
+
+## Collection Postman
+
+**Link Oficial**: https://documenter.getpostman.com/view/13574984/Uz5ArJQc
+
+**Como usar**:
+1. Importe a collection no Postman
+2. Crie um Environment com:
+   - `efi-cob-api`: URL base (prod/homolog)
+   - `client_id`: Seu Client_Id
+   - `client_secret`: Seu Client_Secret
+3. Execute `/v1/authorize` primeiro
+4. Token será salvo automaticamente como variável
+5. Teste outros endpoints
+
+---
+
+## Recursos Adicionais
+
+### Documentação Oficial
+- **Portal Dev**: https://dev.efipay.com.br/
+- **FAQ**: https://sejaefi.com.br/central-de-ajuda
+- **Comunidade**: https://comunidade.sejaefi.com.br
+- **Status de Confirmações**: https://sejaefi.com.br/confirmacoes
+
+### SDKs Oficiais
+A Efí oferece SDKs para:
+- PHP
+- Node.js
+- Python
+- .NET
+- Ruby
+- Java
+- Go
+- Delphi
+
+### Suporte
+- **Telefone SP**: (11) 2394 2208
+- **Telefone Nacional**: 0800 941 2343
+- **Ouvidoria**: 0800 940 0361
+- **Endereço**: Av Paulista, 1337 - Bela Vista, São Paulo, SP
+
+---
+
+## Próximos Passos para Implementação
+
+### Fase 1: Preparação
+- [ ] Criar conta Efí (Produção + Homologação)
+- [ ] Gerar credenciais (`Client_Id` e `Client_Secret`)
+- [ ] Configurar variáveis de ambiente
+- [ ] Instalar SDK oficial (ou criar HTTP client)
+
+### Fase 2: Desenvolvimento
+- [ ] Implementar autenticação OAuth2
+- [ ] Criar serviço de geração de links (`PaymentLinkService`)
+- [ ] Implementar webhook endpoint (`/webhook/efi`)
+- [ ] Criar tratamento de status (`paid`, `canceled`, etc.)
+- [ ] Integrar com sistema de notificações
+
+### Fase 3: Testes
+- [ ] Testar criação de links em homologação
+- [ ] Validar recebimento de webhooks (usar WebhookInbox)
+- [ ] Simular pagamentos (ambiente sandbox)
+- [ ] Testar fluxo completo (criar → pagar → confirmar)
+
+### Fase 4: Produção
+- [ ] Migrar credenciais para produção
+- [ ] Configurar SSL no webhook endpoint
+- [ ] Liberar IPs da Efí no firewall
+- [ ] Ativar monitoring de webhooks
+- [ ] Documentar processo de suporte
+
+---
+
+## Changelog desta Documentação
+
+| Versão | Data | Alterações |
+|--------|------|------------|
+| 1.0.0 | 2026-01-17 | Documentação inicial - foco em Links de Pagamento |
+
+---
+
+## Notas Finais
+
+Esta documentação foi criada para **planejamento de integração futura**. Não contém código de produção implementado, apenas estrutura de endpoints e exemplos conceituais.
+
+**Antes de implementar**:
+1. Valide requisitos de negócio
+2. Defina arquitetura de integração
+3. Configure ambiente de testes
+4. Implemente testes automatizados
+5. Planeje rollout gradual
+
+**Considerações Especiais para BudMed**:
+- Integrar com sistema de Orders existente
+- Mapear status Efí → status interno
+- Sincronizar com Google Meet (appointments online)
+- Notificar pacientes via sistema existente
+- Considerar cupons de desconto (se aplicável)
+
+---
+
+**Documentação coletada em**: 17 de Janeiro de 2026  
+**Fonte**: https://dev.efipay.com.br/docs/api-cobrancas/  
+**Autor**: GitHub Copilot Agent  
+**Propósito**: LLM-friendly documentation para implementação futura

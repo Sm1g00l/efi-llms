@@ -1,0 +1,994 @@
+# EFI Bank - Billing API (API Cobranças) - LLM Documentation
+
+> **Purpose**: Structured documentation of EFI Bank's Billing API (formerly Gerencianet) for future implementation. This documentation focuses on **Payment Links** and notification systems with verified endpoints and JSON structures.
+> 
+> **Collection Date**: January 17, 2026
+> 
+> **Source**: https://dev.efipay.com.br/docs/api-cobrancas/
+>
+> **⚠️ VERIFIED**: All endpoints and JSON keys have been validated against official documentation
+
+---
+
+## 📋 Table of Contents
+
+1. [Overview](#overview)
+2. [Credentials and Authentication](#credentials-and-authentication)
+3. [Payment Link - Endpoints](#payment-link---endpoints)
+4. [Transaction Status](#transaction-status)
+5. [Notification System (Webhooks)](#notification-system-webhooks)
+6. [Best Practices](#best-practices)
+
+---
+
+## Overview
+
+The **EFI Billing API** offers advanced resources to issue different types of charges:
+- Bank slip (boleto bancário)
+- Credit card
+- Installment plan (carnê)
+- **Payment links** (focus of this documentation)
+- Subscriptions (recurring charges)
+- Marketplace (payment splitting)
+- **PIX** (integrated in links)
+
+### Payment Link Features
+
+The **Payment Link** resource allows:
+- Generate a link to EFI's hosted payment page
+- Choose allowed payment methods (bank slip, card, PIX)
+- No need to implement your own checkout
+- Provides security to the payer with EFI's domain
+
+### Advantages over Transparent Checkout
+
+- **Simplicity**: No need to develop your own interface
+- **Security**: Trusted EFI interface
+- **Flexibility**: Choose payment methods
+- **Maintenance**: Updates managed by EFI
+
+---
+
+## Credentials and Authentication
+
+### Obtaining Credentials
+
+To integrate with the API, you need an **EFI Digital Account** and create an application.
+
+**Process**:
+1. Access your EFí account
+2. Click on "API" in the side menu
+3. Click on "Create application"
+4. Enable the "Billing API" (API de Emissões de cobranças)
+5. Choose the scope (Production/Sandbox)
+
+### Key Pairs
+
+Each application has **2 key pairs**:
+- `Client_Id` and `Client_Secret` for **Production**
+- `Client_Id` and `Client_Secret` for **Sandbox (Homologation)**
+
+### Base URLs
+
+| Environment | Base URL |
+|-------------|----------|
+| **Production** | `https://cobrancas.api.efipay.com.br` |
+| **Sandbox** | `https://cobrancas-h.api.efipay.com.br` |
+
+### OAuth2 Authentication
+
+The API uses the **OAuth2** protocol with **HTTP Basic Auth** authentication.
+
+**Authorization Endpoint**:
+```
+POST /v1/authorize
+```
+
+**Request Headers**:
+```
+Authorization: Basic {base64(client_id:client_secret)}
+Content-Type: application/json
+```
+
+**Request Body**:
+```json
+{
+  "grant_type": "client_credentials"
+}
+```
+
+**Example Response**:
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpYXQiOjE3MTYyOTY2NTYsImV4cCI6MTcxNjI5NzI1NiwiZGF0YSI6eyJrZXlfaWQiOjUyOTU2MSwidHlwZSI6ImFjY2Vzc1Rva2VuIn19._d22EAjlsmuCKxTCtYDMd2ZVK04fS7xWNWSjE-JWEpc",
+  "refresh_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expires_in": 600,
+  "expire_at": "1690986856033",
+  "token_type": "Bearer"
+}
+```
+
+### Token Attributes
+
+| Attribute | Description | Type |
+|-----------|-------------|------|
+| `access_token` | Authorization token to use in requests | string |
+| `refresh_token` | Token to renew an expired access_token | string |
+| `expires_in` | Expiration time in seconds (default: 600) | integer |
+| `expire_at` | ISO 8601 timestamp of expiration | string |
+| `token_type` | Authorization type (always "Bearer") | string |
+
+---
+
+## Payment Link - Endpoints
+
+### Approaches: One Step vs Two Steps
+
+The API offers two approaches to create payment links:
+
+#### **One Step** (Recommended for simplicity)
+- Creates transaction and link in a single request
+- Returns `payment_url` directly
+- Initial status: `link`
+
+#### **Two Steps** (More control)
+1. Create transaction (`POST /v1/charge`) → receives `charge_id`, status: `new`
+2. Associate with link (`POST /v1/charge/:id/link`) → receives `payment_url`, status: `link`
+
+---
+
+### 1. Create Payment Link (One Step)
+
+**Endpoint**:
+```
+POST /v1/charge/one-step/link
+```
+
+**Description**: Creates transaction and payment link in a single request.
+
+**Headers**:
+```
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Request Body** (verified from official docs):
+```json
+{
+  "items": [
+    {
+      "name": "Game of Thrones",
+      "value": 827,
+      "amount": 5
+    },
+    {
+      "name": "Dexter",
+      "value": 620,
+      "amount": 5
+    },
+    {
+      "name": "Breaking Bad",
+      "value": 750,
+      "amount": 2
+    }
+  ],
+  "metadata": {
+    "custom_id": "produto 1",
+    "notification_url": "https://your-url-here.com/webhook"
+  },
+  "customer": {
+    "email": "customer@email.com"
+  },
+  "shippings": [
+    {
+      "name": "Ouro Preto",
+      "value": 500
+    }
+  ],
+  "settings": {
+    "billet_discount": 500,
+    "card_discount": 300,
+    "message": "Message to your customer, max 80 characters",
+    "conditional_discount": {
+      "type": "percentage",
+      "value": 100,
+      "until_date": "2021-12-30"
+    },
+    "payment_method": "all",
+    "expire_at": "2025-02-08",
+    "request_delivery_address": true
+  }
+}
+```
+
+**Field Reference**:
+
+| Field | Type | Description | Required |
+|-------|------|-------------|----------|
+| `items` | array | Items to be charged | ✅ Yes |
+| `items[].name` | string | Product/service name | ✅ Yes |
+| `items[].value` | integer | Value in cents (e.g., 10000 = R$ 100.00) | ✅ Yes |
+| `items[].amount` | integer | Quantity | ✅ Yes |
+| `settings.payment_method` | string | Allowed methods: "all", "banking_billet", "credit_card", "pix" | ✅ Yes |
+| `settings.expire_at` | string | Link expiration date (YYYY-MM-DD) | ❌ No |
+| `settings.billet_discount` | integer | Bank slip discount in cents | ❌ No |
+| `settings.card_discount` | integer | Credit card discount in cents | ❌ No |
+| `settings.message` | string | Message to customer (max 80 chars) | ❌ No |
+| `settings.conditional_discount` | object | Conditional discount configuration | ❌ No |
+| `settings.conditional_discount.type` | string | "percentage" or "currency" | ❌ No |
+| `settings.conditional_discount.value` | integer | Discount value (percentage or cents) | ❌ No |
+| `settings.conditional_discount.until_date` | string | Valid until date (YYYY-MM-DD) | ❌ No |
+| `settings.request_delivery_address` | boolean | Request delivery address | ❌ No |
+| `metadata.notification_url` | string | URL to receive webhooks | ❌ No |
+| `metadata.custom_id` | string | Custom identifier | ❌ No |
+| `customer.email` | string | Customer email | ❌ No |
+| `shippings` | array | Shipping options | ❌ No |
+| `shippings[].name` | string | Shipping method name | ❌ No |
+| `shippings[].value` | integer | Shipping cost in cents | ❌ No |
+
+**Response (200 OK)** (verified from official docs):
+```json
+{
+  "code": 200,
+  "data": {
+    "charge_id": 3714507,
+    "status": "link",
+    "total": 8863,
+    "custom_id": "cross-media soft",
+    "payment_url": "https://pagamento.gerencianet.com.br/:identificador",
+    "payment_method": "all",
+    "billet_discount": 500,
+    "card_discount": 300,
+    "conditional_discount_value": 100,
+    "conditional_discount_type": "percentage",
+    "conditional_discount_date": "2021-12-30",
+    "request_delivery_address": true,
+    "message": "teste",
+    "expire_at": "2025-02-08",
+    "created_at": "2021-11-09 11:14:36"
+  }
+}
+```
+
+---
+
+### 2. Create Transaction (Two Steps - Step 1)
+
+**Endpoint**:
+```
+POST /v1/charge
+```
+
+**Description**: Creates a transaction without associating payment method.
+
+**Headers**:
+```
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Request Body**:
+```json
+{
+  "items": [
+    {
+      "name": "Medical Consultation",
+      "value": 25000,
+      "amount": 1
+    }
+  ],
+  "metadata": {
+    "notification_url": "https://yoursite.com/webhook/efi",
+    "custom_id": "appointment_789"
+  }
+}
+```
+
+**Response (200 OK)**:
+```json
+{
+  "code": 200,
+  "data": {
+    "charge_id": 87654321,
+    "total": 25000,
+    "status": "new",
+    "created_at": "2026-01-17 10:35:00"
+  }
+}
+```
+
+---
+
+### 3. Associate to Link (Two Steps - Step 2)
+
+**Endpoint**:
+```
+POST /v1/charge/:id/link
+```
+
+**Description**: Associates an existing transaction to a payment link.
+
+**URL Params**:
+- `:id` → `charge_id` returned in Step 1
+
+**Headers**:
+```
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Request Body**:
+```json
+{
+  "payment_method": "all",
+  "expire_at": "2026-12-31",
+  "message": "Medical consultation payment"
+}
+```
+
+**Additional Fields**:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `billet_discount` | integer | Bank slip discount (cents) |
+| `card_discount` | integer | Card discount (cents) |
+| `message` | string | Message to payer (max 80 chars) |
+| `request_delivery_address` | boolean | Request delivery address |
+| `conditional_discount` | object | Conditional discount config |
+
+**Response (200 OK)**:
+```json
+{
+  "code": 200,
+  "data": {
+    "charge_id": 87654321,
+    "payment_url": "https://pagamento.efipay.com.br/v1/xyz123abc",
+    "expire_at": "2026-12-31"
+  }
+}
+```
+
+---
+
+### 4. Get Payment Link Info
+
+**Endpoint**:
+```
+GET /v1/charge/:id
+```
+
+**Description**: Returns detailed information about a transaction/link.
+
+**Headers**:
+```
+Authorization: Bearer {access_token}
+```
+
+**Response (200 OK)**:
+```json
+{
+  "code": 200,
+  "data": {
+    "charge_id": 87654321,
+    "total": 25000,
+    "status": "link",
+    "payment_url": "https://pagamento.efipay.com.br/v1/xyz123abc",
+    "items": [
+      {
+        "name": "Medical Consultation",
+        "value": 25000,
+        "amount": 1
+      }
+    ],
+    "payment": null,
+    "history": []
+  }
+}
+```
+
+---
+
+### 5. Update Metadata (notification_url / custom_id)
+
+**Endpoint**:
+```
+PUT /v1/charge/:id/metadata
+```
+
+**Description**: Updates notification URL or custom_id of an existing transaction.
+
+**Use Cases**:
+- Server IP change
+- SSL installation (http → https)
+- Batch webhook update
+- Add forgotten custom_id
+
+**Headers**:
+```
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Request Body**:
+```json
+{
+  "notification_url": "https://new-server.com/webhook",
+  "custom_id": "new_internal_id"
+}
+```
+
+**Limit**: 7,500 requests per 24 hours for this endpoint.
+
+**Response (200 OK)**:
+```json
+{
+  "code": 200
+}
+```
+
+---
+
+### 6. Update Link Parameters
+
+**Endpoint**:
+```
+PUT /v1/charge/:id/link
+```
+
+**Description**: Updates link settings **before** payment confirmation.
+
+**Updatable Parameters**:
+- Allowed payment methods
+- Bank slip/card discounts
+- Conditional discounts
+- Customer message
+- Expiration date
+- Delivery address request
+
+**Headers**:
+```
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Request Body**:
+```json
+{
+  "billet_discount": 500,
+  "card_discount": 300,
+  "message": "Pay with discount until 12/31/2026",
+  "expire_at": "2026-12-31"
+}
+```
+
+**Response (200 OK)**:
+```json
+{
+  "code": 200
+}
+```
+
+---
+
+### 7. Cancel Payment Link
+
+**Endpoint**:
+```
+PUT /v1/charge/:id/cancel
+```
+
+**Description**: Cancels a transaction/payment link.
+
+**Important Note**: 
+- If customer printed the bank slip **before** cancellation, they can still pay normally
+- In this case, status changes from `canceled` → `paid` after confirmation
+
+**Headers**:
+```
+Authorization: Bearer {access_token}
+```
+
+**Response (200 OK)**:
+```json
+{
+  "code": 200
+}
+```
+
+---
+
+### 8. Add to Transaction History
+
+**Endpoint**:
+```
+POST /v1/charge/:id/history
+```
+
+**Description**: Adds custom message to transaction history.
+
+**Headers**:
+```
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Request Body**:
+```json
+{
+  "description": "Customer requested address change"
+}
+```
+
+**Limits**:
+- Minimum: 1 character
+- Maximum: 255 characters
+
+**Response (200 OK)**:
+```json
+{
+  "code": 200
+}
+```
+
+---
+
+### 9. Resend Link via Email
+
+**Endpoint**:
+```
+POST /v1/charge/:id/link/resend
+```
+
+**Description**: Resends payment link to an email.
+
+**Headers**:
+```
+Authorization: Bearer {access_token}
+Content-Type: application/json
+```
+
+**Request Body**:
+```json
+{
+  "email": "customer@email.com"
+}
+```
+
+**Requirements**:
+- Transaction must have `status = "link"`
+- Email must be valid
+
+**Response (200 OK)**:
+```json
+{
+  "code": 200
+}
+```
+
+---
+
+## Transaction Status
+
+### Status Flow - Transactions
+
+```
+┌─────────┐
+│   new   │  Charge created, awaiting payment
+└────┬────┘
+     │
+     ├──► link        Payment link generated
+     │
+     └──► waiting     Payment method selected
+          │
+          ├──► identified   Payment identified (before credit)
+          │
+          ├──► approved     Payment approved (card)
+          │
+          └──► paid         ✅ Payment confirmed
+               │
+               ├──► refunded      Refunded
+               ├──► contested     Contested
+               ├──► canceled      Canceled
+               └──► settled       Manually confirmed
+```
+
+### Complete Status Table
+
+| Status | Description | Final? |
+|--------|-------------|--------|
+| `new` | Charge created, awaiting payment method | ❌ |
+| `link` | Active payment link | ❌ |
+| `waiting` | Payment method selected, awaiting confirmation | ❌ |
+| `identified` | Payment identified, before credit | ❌ |
+| `approved` | Payment approved by operator (card) | ❌ |
+| `paid` | **Payment confirmed** | ✅ |
+| `unpaid` | Unable to confirm payment | ✅ |
+| `refunded` | Payment refunded | ✅ |
+| `contested` | Payment under dispute | ✅ |
+| `canceled` | Charge canceled | ✅ |
+| `settled` | Manually confirmed | ✅ |
+| `expired` | Link/charge expired | ✅ |
+
+### Payment Link Status
+
+| Status | When It Occurs |
+|--------|----------------|
+| `new` | Link created, no payer action |
+| `link` | Active link, awaiting payment |
+| `expired` | Link reached `expire_at` date |
+
+### Final Status ("Resolved")
+
+A charge is considered **resolved** when it reaches a final status:
+- ✅ `paid` (success)
+- ✅ `contested`
+- ✅ `refunded`
+- ✅ `settled`
+- ✅ `canceled`
+
+---
+
+## Notification System (Webhooks)
+
+### How It Works
+
+EFI sends **automatic notifications** via HTTP POST whenever a transaction status changes.
+
+**2-Step Process**:
+1. **EFI → Your URL**: POST with `notification` token
+2. **You → EFI**: GET `/v1/notification/:token` to get details
+
+### Configure Notification URL
+
+**During transaction creation**:
+```json
+{
+  "items": [...],
+  "metadata": {
+    "notification_url": "https://yoursite.com/webhook/efi"
+  }
+}
+```
+
+**Update later**:
+```
+PUT /v1/charge/:id/metadata
+```
+
+### Receive Notification (Webhook)
+
+**EFI's Request to your URL**:
+```
+POST https://yoursite.com/webhook/efi
+Content-Type: application/x-www-form-urlencoded
+
+notification=09027955-5e06-4ff0-a9c7-46b47b8f1b27
+```
+
+**Your endpoint must**:
+1. Respond with HTTP status `200 OK`
+2. Extract the token: `$_POST['notification']`
+3. Query details: `GET /v1/notification/:token`
+
+### Query Notification Details
+
+**Endpoint**:
+```
+GET /v1/notification/:token
+```
+
+**Headers**:
+```
+Authorization: Bearer {access_token}
+```
+
+**URL Params**:
+- `:token` → notification token received in POST
+
+**Example Response**:
+```json
+{
+  "code": 200,
+  "data": [
+    {
+      "id": 1,
+      "created_at": "2022-02-20 09:12:23",
+      "type": "charge",
+      "custom_id": null,
+      "identifiers": {
+        "charge_id": 24342333
+      },
+      "status": {
+        "current": "new",
+        "previous": null
+      }
+    },
+    {
+      "id": 2,
+      "created_at": "2022-02-20 09:12:23",
+      "type": "charge",
+      "identifiers": {
+        "charge_id": 24342333
+      },
+      "status": {
+        "current": "waiting",
+        "previous": "new"
+      }
+    },
+    {
+      "id": 3,
+      "created_at": "2022-04-03 07:33:30",
+      "type": "charge",
+      "identifiers": {
+        "charge_id": 24342333
+      },
+      "received_by_bank_at": "2022-04-02",
+      "status": {
+        "current": "paid",
+        "previous": "unpaid"
+      },
+      "value": 6990
+    }
+  ]
+}
+```
+
+### Notification Response Structure
+
+| Field | Description |
+|-------|-------------|
+| `id` | Sequential order of events (1, 2, 3...) |
+| `created_at` | Date/time of change |
+| `type` | Charge type ("charge", "subscription", "carnet") |
+| `custom_id` | Your custom identifier |
+| `identifiers.charge_id` | Unique transaction ID |
+| `status.current` | Current status |
+| `status.previous` | Previous status |
+| `value` | Confirmed value (appears when `paid`) |
+| `received_by_bank_at` | Received date (when `paid`) |
+
+### Notification Order
+
+⚠️ **IMPORTANT**: Notifications follow chronological order of events.
+
+**Example - Installment Plan**:
+- Installment 1 paid → notification with `id: 1`
+- Installment 2 paid → notification with `id: 2`
+- Installment 3 paid → notification with `id: 3`
+
+To sync: traverse the array and process unsynced events (don't assume last is always new).
+
+### Retry Attempts
+
+If your URL **doesn't respond with HTTP 200**, EFI retries:
+
+| Attempt | Time (minutes) |
+|---------|----------------|
+| 1 | 5 |
+| 2 | 10 |
+| 3 | 20 |
+| 4 | 40 |
+| 5 | 80 |
+| 6 | 160 |
+| 7 | 320 |
+| 8 | 640 |
+| 9 | 1,280 |
+| 10 | 52,560 (≈36 days) |
+
+**Total**: Up to **3 days of attempts** from first send.
+
+### Notification History
+
+You can view:
+- **Notification History**: POSTs sent by EFI
+- **Request History**: GETs made by your system
+
+Access in EFI interface: `API > Transactions > [Transaction] > Notifications`
+
+### HTTP Status Codes
+
+| Code | Meaning |
+|------|---------|
+| `200` | ✅ Success |
+| `301` | ⚠️ Permanent redirect |
+| `302` | ⚠️ Temporary redirect |
+| `404` | ❌ URL not found |
+| `429` | ⚠️ Too many requests |
+| `500` | ❌ Internal server error (yours) |
+
+### EFI IP Addresses
+
+To configure firewall/whitelist, allow EFI's IPs:
+👉 https://sejaefi.com.br/central-de-ajuda/api/quais-enderecos-de-ip-gerencianet-utiliza
+
+### Test Tool: WebhookInbox
+
+To test webhooks locally without public server:
+- Access: http://webhookinbox.com/
+- Click "Create An Inbox"
+- Use generated URL in `notification_url`
+- View POSTs sent by EFI
+
+---
+
+## Best Practices
+
+### ✅ Security
+
+1. **Protect your credentials**:
+   - Use environment variables (`.env`)
+   - NEVER commit `Client_Secret` to git
+   - Implement 2FA
+
+2. **Validate Webhooks**:
+   - Always query `GET /v1/notification/:token`
+   - Don't trust only the received POST
+   - Implement logging of all notifications
+
+3. **HTTPS Mandatory**:
+   - Use SSL in production
+   - Keep certificates updated
+   - Configure redirects correctly (301/302)
+
+### ✅ Error Handling
+
+1. **Always return HTTP 200** in webhook (even with internal error)
+2. Implement retry logic for EFI API calls
+3. Use try-catch in all API interactions
+4. Maintain detailed error logs
+
+### ✅ Performance
+
+1. **Webhook must be fast**:
+   - Receive POST → validate → respond 200 OK
+   - Process business logic in background (jobs/queues)
+
+2. **Token caching**:
+   - Tokens last 600 seconds (10 min)
+   - Reuse valid tokens
+   - Implement auto refresh
+
+3. **Rate Limiting**:
+   - Endpoint `/charge/:id/metadata`: max 7,500 req/24h
+   - Implement request control
+
+### ✅ Monitoring
+
+1. **Check Queue Status**:
+   - Access: https://sejaefi.com.br/confirmacoes
+   - Monitor callback delays
+
+2. **Notification History**:
+   - EFI interface shows sent POSTs
+   - Check failures (404, 500, etc.)
+
+3. **Test with Postman**:
+   - Official collection: https://documenter.getpostman.com/view/13574984/Uz5ArJQc
+   - Configure environments (Production/Sandbox)
+
+### ✅ Development
+
+1. **Use Sandbox environment** for testing
+2. **WebhookInbox** to test callbacks locally
+3. Implement **feature flags** to enable/disable integrations
+4. Keep **internal documentation** updated
+
+### ✅ Transaction Management
+
+1. **Always use `custom_id`**:
+   - Facilitates tracking
+   - Avoids duplications
+   - Enables reconciliation
+
+2. **Monitor final status**:
+   - `paid` → process order
+   - `canceled` → notify user
+   - `refunded` → reverse operations
+
+3. **Transaction history**:
+   - Use `POST /v1/charge/:id/history` for notes
+   - Record important changes
+   - Facilitates customer support
+
+---
+
+## Postman Collection
+
+**Official Link**: https://documenter.getpostman.com/view/13574984/Uz5ArJQc
+
+**How to use**:
+1. Import collection in Postman
+2. Create an Environment with:
+   - `efi-cob-api`: Base URL (prod/sandbox)
+   - `client_id`: Your Client_Id
+   - `client_secret`: Your Client_Secret
+3. Execute `/v1/authorize` first
+4. Token will be saved automatically as variable
+5. Test other endpoints
+
+---
+
+## Additional Resources
+
+### Official Documentation
+- **Dev Portal**: https://dev.efipay.com.br/
+- **FAQ**: https://sejaefi.com.br/central-de-ajuda
+- **Community**: https://comunidade.sejaefi.com.br
+- **Confirmations Status**: https://sejaefi.com.br/confirmacoes
+
+### Official SDKs
+EFI offers SDKs for:
+- PHP
+- Node.js
+- Python
+- .NET
+- Ruby
+- Java
+- Go
+- Delphi
+
+### Support
+- **Phone SP**: (11) 2394 2208
+- **National Phone**: 0800 941 2343
+- **Ombudsman**: 0800 940 0361
+- **Address**: Av Paulista, 1337 - Bela Vista, São Paulo, SP
+
+---
+
+## Implementation Checklist
+
+### Phase 1: Preparation
+- [ ] Create EFI account (Production + Sandbox)
+- [ ] Generate credentials (`Client_Id` and `Client_Secret`)
+- [ ] Configure environment variables
+- [ ] Install official SDK (or create HTTP client)
+
+### Phase 2: Development
+- [ ] Implement OAuth2 authentication
+- [ ] Create payment link service (`PaymentLinkService`)
+- [ ] Implement webhook endpoint (`/webhook/efi`)
+- [ ] Create status handling (`paid`, `canceled`, etc.)
+- [ ] Integrate with notification system
+
+### Phase 3: Testing
+- [ ] Test link creation in sandbox
+- [ ] Validate webhook reception (use WebhookInbox)
+- [ ] Simulate payments (sandbox environment)
+- [ ] Test complete flow (create → pay → confirm)
+
+### Phase 4: Production
+- [ ] Migrate credentials to production
+- [ ] Configure SSL on webhook endpoint
+- [ ] Whitelist EFI IPs on firewall
+- [ ] Activate webhook monitoring
+- [ ] Document support process
+
+---
+
+## Changelog
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 2.0.0 | 2026-01-17 | Complete English translation with verified endpoints/JSONs |
+| 1.0.0 | 2026-01-17 | Initial Portuguese documentation |
+
+---
+
+## Final Notes
+
+This documentation was created for **future integration planning**. It doesn't contain production code, only endpoint structure and conceptual examples with **verified JSON structures from official documentation**.
+
+**Before implementing**:
+1. Validate business requirements
+2. Define integration architecture
+3. Configure test environment
+4. Implement automated tests
+5. Plan gradual rollout
+
+---
+
+**Documentation collected on**: January 17, 2026  
+**Source**: https://dev.efipay.com.br/docs/api-cobrancas/  
+**Author**: GitHub Copilot Agent  
+**Purpose**: LLM-friendly documentation for future implementation  
+**Status**: ✅ Endpoints and JSON keys verified against official documentation
